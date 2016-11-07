@@ -28,7 +28,7 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 			}
 			if ( ! file_exists( '~/.cpanel/proxy_conf/' . $this->domain ) ) {
 				add_option( 'epc_varnish_cache_level', 5, null, false );
-				$this->touch_varnish();
+				$this->touch_varnish( 0, 5 );
 			}
 		}
 
