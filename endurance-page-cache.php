@@ -20,8 +20,15 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 			$this->hooks();
 			$this->cache_dir = WP_CONTENT_DIR . '/endurance-page-cache';
 			$this->cache_exempt = array( 'wp-admin', '.', 'checkout', 'cart' );
+			$this->domain = str_replace( array( 'http://', 'https://' ), '', get_site_url() );
+			$this->varnish_server = '127.0.0.1';
+			$this->varnish_port = '8080';
 			if ( ! wp_next_scheduled( 'epc_purge' ) ) {
 				wp_schedule_event( strtotime( 'today midnight' ), 'daily', 'epc_purge' );
+			}
+			if ( ! file_exists( '~/.cpanel/proxy_conf/' . $this->domain ) ) {
+				add_option( 'epc_varnish_cache_level', 5, null, false );
+				$this->touch_varnish();
 			}
 		}
 
@@ -48,6 +55,8 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 			add_action( 'epc_purge', array( $this, 'purge_all' ) );
 
 			add_action( 'wp_update_nav_menu', array( $this, 'purge_all' ) );
+
+			add_action( 'update_option_epc_varnish_cache_level', array( $this, 'touch_varnish' ), 10, 2 );
 		}
 
 		function comment( $comment_id, $comment_approved ) {
@@ -79,7 +88,7 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 
 			$post_date = (array) json_decode( get_the_date( '{"\y":"Y","\m":"m","\d":"d"}', $post_id ) );
 			if ( ! empty( $post_date ) ) {
-				$this->purge_all( $this->uri_to_cache( get_year_link( $post_date['y'] ) ) );
+				$this->purge_all( $this->uri_to_file( get_year_link( $post_date['y'] ) ) );
 			}
 		}
 
@@ -116,7 +125,7 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 
 		function purge_all( $dir = null ) {
 			if ( is_null( $dir ) || 'true' == $dir ) {
-				$dir = WP_CONTENT_DIR . '/endurance-page-cache';
+				$dir = $this->cache_dir;
 			}
 			$dir = str_replace( '_index.html', '', $dir );
 			if ( is_dir( $dir ) ) {
@@ -130,7 +139,7 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 						if ( is_dir( $dir . '/' . $file ) ) {
 							$this->purge_all( $dir . '/' . $file );
 						} else {
-							unlink( $dir . '/' . $file );
+							$this->purge_single( $this->file_to_uri( $dir . '/' . $file ) );
 						}
 					}
 					rmdir( $dir );
@@ -139,13 +148,36 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 		}
 
 		function purge_single( $uri ) {
-			$cache_file = $this->uri_to_cache( $uri );
+			$cache_file = $this->uri_to_file( $uri );
 			if ( file_exists( $cache_file ) ) {
 				unlink( $cache_file );
-
 			}
 			if ( file_exists( $this->cache_dir . '/_index.html' ) ) {
 				unlink( $this->cache_dir . '/_index.html' );
+			}
+			$this->purge_varnish_single( $uri );
+			$this->purge_varnish_single( get_site_url() );
+		}
+
+		function purge_varnish_single( $uri ) {
+			$headers = array(
+				'method'      => 'PURGE ' . $uri . ' HTTP/1.1',
+				'Host: ' . php_uname( 'n' ),
+				'blocking'    => false,
+				'user-agent'  => 'Endurance Page Cache',
+			);
+			$response = wp_remote_request( $this->varnish_server .':'. $this->varnish_port, $headers );
+			if ( ! is_wp_error( $response ) ) {
+				return true;
+			} else {
+				return false;
+			}
+		}
+
+		function touch_varnish( $old_value = null, $new_value = null ) {
+			if ( $old_value !== $new_value ) {
+				@file_put_contents( '~/.cpanel/proxy_conf/' . $this->domain , 'cache_level=' . $new_value );
+				@touch( '/etc/proxy_notify/' . exec( 'whoami' ) );
 			}
 		}
 
@@ -158,9 +190,14 @@ if ( ! class_exists( 'Endurance_Page_Cache' ) ) {
 			return $content;
 		}
 
-		function uri_to_cache( $uri ) {
+		function uri_to_file( $uri ) {
 			$path = str_replace( get_site_url(), '', $uri );
 			return $this->cache_dir . $path . '_index.html';
+		}
+
+		function file_to_uri( $file ) {
+			$path = str_replace( $this->cache_dir, '', $uri );
+			return get_site_url( $path );
 		}
 
 		function is_cachable() {
